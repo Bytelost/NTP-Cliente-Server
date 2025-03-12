@@ -1,12 +1,18 @@
 import socket
 import struct
 import time
+import sys
+import hmac
+import hashlib
 
-NTP_SERVER = "127.0.0.1"
 NTP_PORT = 123
 NTP_TIMESTAMP_DELTA = 2208988800  # Adjust from NTP epoch (1900) to Unix epoch (1970)
+SECRET_KEY = b"super_secret_key"  # Shared secret between client and server
 
-def ntp_client():
+def generate_hmac(data):
+    return hmac.new(SECRET_KEY, data, hashlib.sha256).digest()
+
+def ntp_client(ntp_server):
     client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     client.settimeout(5)  # 5-second timeout
 
@@ -25,14 +31,30 @@ def ntp_client():
     )
 
     orig_timestamp = time.time()  # Client's request send time
-    client.sendto(request, (NTP_SERVER, NTP_PORT))
+
+    # Compute and append HMAC signature
+    signature = generate_hmac(request)
+    request_with_hmac = request + signature
+    print(f"Sent packet length: {len(request) + 32}")  # Should be 80 bytes
+
+
+    client.sendto(request_with_hmac, (ntp_server, NTP_PORT))
 
     try:
-        data, _ = client.recvfrom(48)  # Receive 48-byte response
+        data, _ = client.recvfrom(64)  # Expecting 48-byte response + HMAC
         dest_timestamp = time.time()  # Time at which response arrived
 
-        # Unpack response correctly (Extract Transmit Timestamp)
-        unpacked = struct.unpack("!12I", data)
+        # Separate response and HMAC
+        response, received_hmac = data[:48], data[48:]
+
+        # Verify HMAC
+        expected_hmac = generate_hmac(response)
+        if received_hmac != expected_hmac[:16]:
+            print("HMAC verification failed! Possible tampering.")
+            return
+
+        # Unpack response (Extract Transmit Timestamp)
+        unpacked = struct.unpack("!12I", response)
         trans_seconds = unpacked[10]  # Transmit Timestamp (Seconds)
         trans_fraction = unpacked[11]  # Transmit Timestamp (Fraction)
 
@@ -51,4 +73,8 @@ def ntp_client():
     except socket.timeout:
         print("No response from NTP server.")
 
-ntp_client()
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python ntp_client.py <ntp_server_ip>")
+    else:
+        ntp_client(sys.argv[1])
